@@ -1,0 +1,19 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+backend/.venv/
+backend/data/
+
+# generated, reproducible — regenerate with `make seed`
+ecommerce-app/
+
+# node
+frontend/node_modules/
+frontend/dist/
+
+# os
+.DS_Store
+.gstack/
