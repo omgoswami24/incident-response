@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  Environment,
   FaultScenario,
   IncidentDetail,
   IncidentSummary,
+  Metrics,
   TimelineEvent,
 } from "./types";
 
@@ -34,14 +36,64 @@ export async function fetchTimeline(id: string): Promise<TimelineEvent[]> {
 
 export async function injectFault(
   faultScenarioId: string,
-): Promise<{ incident_id: string }> {
+): Promise<{ deployed_branch: string; head_sha: string | null; note: string }> {
   return json(
-    await fetch(`${API_BASE}/api/incidents/inject`, {
+    await fetch(`${API_BASE}/api/faults/inject`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ fault_scenario_id: faultScenarioId }),
     }),
   );
+}
+
+export async function retryIncident(id: string): Promise<IncidentDetail> {
+  return json(
+    await fetch(`${API_BASE}/api/incidents/${id}/retry`, { method: "POST" }),
+  );
+}
+
+export async function remediateIncident(id: string): Promise<IncidentDetail> {
+  return json(
+    await fetch(`${API_BASE}/api/incidents/${id}/remediate`, { method: "POST" }),
+  );
+}
+
+export async function fetchMetrics(): Promise<Metrics> {
+  return json(await fetch(`${API_BASE}/api/metrics`));
+}
+
+export async function fetchEnvironment(): Promise<Environment> {
+  return json(await fetch(`${API_BASE}/api/environment`));
+}
+
+export async function resetEnvironment(): Promise<unknown> {
+  return json(await fetch(`${API_BASE}/api/environment/reset`, { method: "POST" }));
+}
+
+/** Poll helper: refetches on an interval while the tab is visible. */
+export function usePolling<T>(fetcher: () => Promise<T>, intervalMs: number): T | null {
+  const [data, setData] = useState<T | null>(null);
+  const fetcherRef = useRef(fetcher);
+  fetcherRef.current = fetcher;
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      fetcherRef.current()
+        .then((d) => {
+          if (!cancelled) setData(d);
+        })
+        .catch(() => {});
+    };
+    tick();
+    const handle = setInterval(tick, intervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [intervalMs]);
+
+  return data;
 }
 
 export async function resolveIncident(

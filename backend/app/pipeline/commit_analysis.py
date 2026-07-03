@@ -1,10 +1,19 @@
 from app.adapters.github.base import GitHubAdapter
 from app.adapters.llm.llm_client import complete_json
-from app.seed.fault_scenarios import FaultScenario
 
 SYSTEM_PROMPT = """You are an SRE incident-response assistant. Given a production \
-alert and a numbered list of recent commits (each with its diff) from the service's \
-repository, identify which single commit most likely caused the alert.
+alert (composed from live service metrics) and a numbered list of recent commits \
+(each with its diff) from the service's repository, identify which single commit \
+most likely caused the alert.
+
+Apply standard root-cause priors:
+- The anomaly appeared recently, so strongly prefer the most recent commits: \
+older commits have been running in production without triggering this alert.
+- Distinguish a change that INTRODUCED a subsystem long ago (running fine since) \
+from a recent change that altered that subsystem's behavior or configuration.
+- Config-only changes (timeouts, TTLs, pool sizes, flags) are common regression \
+sources and fully capable of explaining large latency or error shifts.
+- Only pick an older commit if no recent commit can plausibly explain the alert.
 
 Respond with ONLY a JSON object, no other text:
 {"suspected_candidate_number": <integer index of the most likely commit from the list>, \
@@ -12,7 +21,7 @@ Respond with ONLY a JSON object, no other text:
 "confidence": <float between 0 and 1>}"""
 
 
-def analyze_commits(adapter: GitHubAdapter, scenario: FaultScenario, limit: int = 15) -> dict:
+def analyze_commits(adapter: GitHubAdapter, alert_text: str, limit: int = 15) -> dict:
     commits = adapter.list_recent_commits(limit=limit)
 
     candidates = []
@@ -24,7 +33,7 @@ def analyze_commits(adapter: GitHubAdapter, scenario: FaultScenario, limit: int 
         )
 
     user_prompt = (
-        f"Alert:\n{scenario.alert_description}\n\n"
+        f"Alert:\n{alert_text}\n\n"
         f"Recent commits (most recent first):\n\n" + "\n\n".join(candidates)
     )
 

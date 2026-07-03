@@ -1,22 +1,33 @@
-from app.seed.fault_scenarios import FaultScenario
+from app.models import Incident
+
+
+def _alert_excerpt(incident: Incident) -> str:
+    """The degraded-endpoints section of the detected alert, for the brief."""
+    text = incident.detected_alert_text or ""
+    if "Nominal endpoints:" in text:
+        text = text.split("Nominal endpoints:")[0].rstrip()
+    return text[:900]
 
 
 def build_slack_blocks(
-    scenario: FaultScenario,
+    incident: Incident,
     commit: dict,
     runbook: dict | None,
     impact: dict,
 ) -> tuple[list[dict], str]:
-    text_fallback = f"🚨 Incident: {scenario.title} — suspected commit {commit['sha'][:7]}"
+    degraded_groups = list(impact.get("degraded_endpoints", {}))
+    headline = ", ".join(degraded_groups) if degraded_groups else "service degradation"
+    title = f"[{impact['severity'].upper()}] {headline}"
+    text_fallback = f"🚨 Incident: {title} — suspected commit {commit['sha'][:7]}"
 
     blocks: list[dict] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": f"🚨 {scenario.title}"},
+            "text": {"type": "plain_text", "text": f"🚨 {title}"},
         },
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Alert*\n{scenario.alert_description}"},
+            "text": {"type": "mrkdwn", "text": f"*Auto-detected alert*\n{_alert_excerpt(incident)}"},
         },
         {
             "type": "section",
@@ -24,15 +35,21 @@ def build_slack_blocks(
                 {"type": "mrkdwn", "text": f"*Severity*\n{impact['severity'].upper()}"},
                 {
                     "type": "mrkdwn",
-                    "text": f"*Affected users*\n{impact['affected_users_pct']}%",
+                    "text": f"*Affected traffic*\n{impact['affected_traffic_pct']}%",
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*Revenue at risk*\n${impact['revenue_at_risk_per_hr_usd']:,}/hr",
+                    "text": (
+                        "*Est. revenue at risk*\n"
+                        f"${impact['est_revenue_at_risk_per_hr_usd']:,}/hr"
+                    ),
                 },
                 {
                     "type": "mrkdwn",
-                    "text": f"*p95 latency*\n{impact['p95_latency_ms']}ms",
+                    "text": (
+                        "*Requests affected*\n"
+                        f"{impact['requests_affected_per_hr']:,}/hr"
+                    ),
                 },
             ],
         },
@@ -48,6 +65,16 @@ def build_slack_blocks(
                 ),
             },
         },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Proposed remediation*\n`git revert {commit['sha'][:7]}` and redeploy "
+                    "— awaiting approval. Recovery will be verified against live metrics."
+                ),
+            },
+        },
     ]
 
     if runbook:
@@ -56,7 +83,10 @@ def build_slack_blocks(
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Runbook*\n{runbook['title']} — see the full runbook panel for diagnosis and mitigation steps.",
+                    "text": (
+                        f"*Runbook*\n{runbook['title']} — see the full runbook panel "
+                        "for diagnosis and mitigation steps."
+                    ),
                 },
             }
         )

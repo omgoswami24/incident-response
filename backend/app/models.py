@@ -17,25 +17,31 @@ class IncidentStatus(StrEnum):
     firing = "firing"
     analyzing = "analyzing"
     briefed = "briefed"
+    remediating = "remediating"
     resolved = "resolved"
     postmortem_generated = "postmortem_generated"
+    closed = "closed"  # operator override (environment reset), terminal
 
 
 class TimelineEventType(StrEnum):
-    fault_injected = "fault_injected"
+    alert_detected = "alert_detected"
     analyzing_started = "analyzing_started"
     commit_identified = "commit_identified"
     runbook_retrieved = "runbook_retrieved"
     impact_estimated = "impact_estimated"
     slack_brief_posted = "slack_brief_posted"
+    remediation_started = "remediation_started"
+    remediation_applied = "remediation_applied"
+    recovery_verified = "recovery_verified"
+    remediation_failed = "remediation_failed"
     resolved = "resolved"
     postmortem_generated = "postmortem_generated"
+    closed = "closed"
     error = "error"
 
 
 class Incident(SQLModel, table=True):
     id: str = Field(default_factory=new_id, primary_key=True)
-    fault_scenario_id: str
     status: IncidentStatus = Field(default=IncidentStatus.firing)
     error_message: str | None = None
 
@@ -44,7 +50,18 @@ class Incident(SQLModel, table=True):
     resolved_at: datetime | None = None
     postmortem_generated_at: datetime | None = None
 
-    # commit analysis
+    # detection — everything the pipeline is allowed to see
+    detected_alert_text: str = ""
+    baseline_json: str | None = None  # healthy per-endpoint stats at detection time
+    detection_stats_json: str | None = None  # degraded window stats at detection time
+
+    # ground truth — what was actually injected; used ONLY to score the
+    # diagnosis after the fact, never fed to the LLM
+    ground_truth_scenario_id: str | None = None
+    ground_truth_commit_sha: str | None = None
+    diagnosis_correct: bool | None = None
+
+    # commit analysis (diagnosis)
     suspected_commit_sha: str | None = None
     suspected_commit_message: str | None = None
     suspected_commit_author: str | None = None
@@ -60,6 +77,12 @@ class Incident(SQLModel, table=True):
     # impact + brief
     impact_json: str | None = None
     slack_brief_json: str | None = None
+
+    # remediation
+    remediation_revert_sha: str | None = None
+    remediation_verified: bool | None = None
+    recovery_stats_json: str | None = None
+
     resolution_notes: str | None = None
     postmortem_markdown: str | None = None
 

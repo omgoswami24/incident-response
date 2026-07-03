@@ -1,69 +1,105 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  fetchEnvironment,
   fetchFaultScenarios,
   fetchIncidents,
+  fetchMetrics,
   injectFault,
+  remediateIncident,
+  resetEnvironment,
   resolveIncident,
+  retryIncident,
   useIncidentStream,
+  usePolling,
 } from "./api";
-import type { FaultScenario, IncidentSummary, Impact, SlackBrief } from "./types";
-import { EcommerceStorefront } from "./components/EcommerceStorefront";
+import type { GroupStats, Impact, SlackBrief } from "./types";
+import { EnvironmentBar } from "./components/EnvironmentBar";
 import { FaultPicker } from "./components/FaultPicker";
 import { IncidentList } from "./components/IncidentList";
 import { IncidentTimeline } from "./components/IncidentTimeline";
-import { SlackBriefCard } from "./components/SlackBriefCard";
+import { MetricsPanel } from "./components/MetricsPanel";
 import { PostmortemView } from "./components/PostmortemView";
+import { SlackBriefCard } from "./components/SlackBriefCard";
 import "./index.css";
 
 export default function App() {
-  const [scenarios, setScenarios] = useState<FaultScenario[]>([]);
-  const [incidents, setIncidents] = useState<IncidentSummary[]>([]);
+  const [scenarios, setScenarios] = useState<
+    Awaited<ReturnType<typeof fetchFaultScenarios>>
+  >([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [injecting, setInjecting] = useState(false);
-  const [resolving, setResolving] = useState(false);
+  const [awaitingSince, setAwaitingSince] = useState<number | null>(null);
+  const [busy, setBusy] = useState<"remediate" | "resolve" | "reset" | null>(null);
 
+  const incidents = usePolling(fetchIncidents, 3000) ?? [];
+  const metrics = usePolling(fetchMetrics, 2000);
+  const environment = usePolling(fetchEnvironment, 5000);
   const { incident, events } = useIncidentStream(selectedId);
 
   useEffect(() => {
     fetchFaultScenarios().then(setScenarios).catch(console.error);
-    refreshIncidents();
   }, []);
 
-  // Refresh the sidebar whenever the selected incident's status changes.
+  // After injecting, auto-open the incident the detector creates.
+  const awaitingRef = useRef(awaitingSince);
+  awaitingRef.current = awaitingSince;
   useEffect(() => {
-    if (incident) refreshIncidents();
-  }, [incident?.status]);
-
-  function refreshIncidents() {
-    fetchIncidents().then(setIncidents).catch(console.error);
-  }
+    if (awaitingRef.current == null || incidents.length === 0) return;
+    const newest = incidents[0];
+    if (new Date(newest.created_at).getTime() >= awaitingRef.current) {
+      setAwaitingSince(null);
+      setSelectedId(newest.id);
+    }
+  }, [incidents]);
 
   async function handleInject(scenarioId: string) {
     setInjecting(true);
     try {
-      const { incident_id } = await injectFault(scenarioId);
-      setSelectedId(incident_id);
+      await injectFault(scenarioId);
+      setAwaitingSince(Date.now() - 5000); // small clock-skew allowance
+      setSelectedId(null);
     } catch (err) {
       console.error(err);
-      alert(`Failed to inject fault: ${err}`);
+      window.alert(`Failed to inject fault: ${err}`);
     } finally {
       setInjecting(false);
     }
   }
 
-  async function handleResolve() {
+  async function handleRemediate() {
     if (!selectedId) return;
-    setResolving(true);
+    setBusy("remediate");
     try {
-      await resolveIncident(
-        selectedId,
-        "Reverted the offending commit and redeployed.",
-      );
+      await remediateIncident(selectedId);
     } catch (err) {
       console.error(err);
-      alert(`Failed to resolve incident: ${err}`);
     } finally {
-      setResolving(false);
+      setBusy(null);
+    }
+  }
+
+  async function handleResolve() {
+    if (!selectedId) return;
+    setBusy("resolve");
+    try {
+      await resolveIncident(selectedId, "Resolved manually from the dashboard.");
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleReset() {
+    setBusy("reset");
+    try {
+      await resetEnvironment();
+      setSelectedId(null);
+      setAwaitingSince(null);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -73,61 +109,111 @@ export default function App() {
   const slackBrief: SlackBrief | null = incident?.slack_brief_json
     ? JSON.parse(incident.slack_brief_json)
     : null;
-  const scenarioTitle =
-    scenarios.find((s) => s.id === incident?.fault_scenario_id)?.title ??
-    incident?.fault_scenario_id;
+  const detectionStats: Record<string, GroupStats> | null =
+    incident?.detection_stats_json ? JSON.parse(incident.detection_stats_json) : null;
+  const recoveryStats: Record<string, GroupStats> | null =
+    incident?.recovery_stats_json ? JSON.parse(incident.recovery_stats_json) : null;
+  const groundTruthScenario = scenarios.find(
+    (s) => s.id === incident?.ground_truth_scenario_id,
+  );
 
   return (
     <div className="app">
       <aside className="sidebar">
         <h1>Incident Response</h1>
-        <p className="muted">Autonomous AI SRE assistant — live demo</p>
+        <p className="muted">
+          Closed-loop AI SRE agent: detect → diagnose → remediate → verify
+        </p>
         <IncidentList
           incidents={incidents}
+          scenarios={scenarios}
           selectedId={selectedId}
           onSelect={setSelectedId}
         />
-        <button
-          className="new-incident-button"
-          onClick={() => setSelectedId(null)}
-        >
-          + New fault
+        <button className="new-incident-button" onClick={() => setSelectedId(null)}>
+          + Inject a fault
         </button>
       </aside>
 
       <main className="main">
+        <EnvironmentBar
+          environment={environment}
+          onReset={handleReset}
+          resetting={busy === "reset"}
+        />
+        <MetricsPanel metrics={metrics} />
+
+        {awaitingSince != null && (
+          <div className="awaiting-banner">
+            <span className="pulse-dot" /> Bad commit deployed. Waiting for the
+            anomaly detector to notice the degradation in live metrics…
+          </div>
+        )}
+
         {!selectedId && (
-          <>
-            <EcommerceStorefront />
-            <FaultPicker
-              scenarios={scenarios}
-              onInject={handleInject}
-              disabled={injecting}
-            />
-          </>
+          <FaultPicker
+            scenarios={scenarios}
+            onInject={handleInject}
+            disabled={injecting || awaitingSince != null || !metrics?.baseline_ready}
+          />
+        )}
+        {!selectedId && !metrics?.baseline_ready && (
+          <p className="muted baseline-note">
+            Fault injection unlocks once the detector has learned a healthy
+            baseline (~1 minute after startup).
+          </p>
         )}
 
         {selectedId && incident && (
           <div className="incident-detail">
             <header className="incident-header">
-              <h2>{scenarioTitle}</h2>
+              <h2>
+                Incident{" "}
+                <code className="incident-id">{incident.id.slice(0, 8)}</code>
+              </h2>
               <span className={`status-badge status-${incident.status}`}>
                 {incident.status.replace(/_/g, " ")}
               </span>
               {incident.status === "briefed" && (
-                <button
-                  className="resolve-button resolve-button-header"
-                  onClick={handleResolve}
-                  disabled={resolving}
-                >
-                  {resolving ? "Resolving…" : "Resolve incident"}
-                </button>
+                <>
+                  <button
+                    className="remediate-button"
+                    onClick={handleRemediate}
+                    disabled={busy != null}
+                  >
+                    {busy === "remediate"
+                      ? "Approving…"
+                      : `Approve remediation: git revert ${incident.suspected_commit_sha?.slice(0, 7)}`}
+                  </button>
+                  <button
+                    className="resolve-button resolve-button-header"
+                    onClick={handleResolve}
+                    disabled={busy != null}
+                  >
+                    Resolve manually
+                  </button>
+                </>
+              )}
+              {incident.status === "remediating" && (
+                <span className="muted remediating-note">
+                  <span className="pulse-dot" /> reverting, redeploying, and
+                  verifying recovery against live metrics…
+                </span>
               )}
             </header>
 
             {incident.error_message && (
               <div className="error-banner">
-                Pipeline error: {incident.error_message}
+                <span>Pipeline error: {incident.error_message}</span>
+                {(incident.status === "firing" ||
+                  incident.status === "analyzing") && (
+                  <button
+                    className="retry-button"
+                    onClick={() => retryIncident(incident.id).catch(console.error)}
+                  >
+                    Retry pipeline
+                  </button>
+                )}
               </div>
             )}
 
@@ -135,12 +221,17 @@ export default function App() {
               <section className="panel">
                 <h3>Timeline</h3>
                 <IncidentTimeline events={events} />
+
+                <div className="alert-card">
+                  <h3>Detected alert</h3>
+                  <pre className="alert-text">{incident.detected_alert_text}</pre>
+                </div>
               </section>
 
               <section className="panel">
                 {incident.suspected_commit_sha && (
                   <div className="commit-card">
-                    <h3>Suspected commit</h3>
+                    <h3>Suspected commit (AI diagnosis)</h3>
                     <code className="commit-sha">
                       {incident.suspected_commit_sha.slice(0, 7)}
                     </code>{" "}
@@ -150,23 +241,46 @@ export default function App() {
                     <div className="commit-author muted">
                       by {incident.suspected_commit_author}
                       {incident.commit_analysis_confidence != null && (
-                        <> · {Math.round(incident.commit_analysis_confidence * 100)}% confidence</>
+                        <>
+                          {" "}
+                          · {Math.round(incident.commit_analysis_confidence * 100)}%
+                          confidence
+                        </>
                       )}
                     </div>
                     <p className="commit-reasoning">
                       {incident.commit_analysis_reasoning}
                     </p>
                     {incident.suspected_commit_diff && (
-                      <pre className="commit-diff">
-                        {incident.suspected_commit_diff}
-                      </pre>
+                      <pre className="commit-diff">{incident.suspected_commit_diff}</pre>
                     )}
+                  </div>
+                )}
+
+                {incident.diagnosis_correct != null && (
+                  <div
+                    className={`ground-truth-card ${incident.diagnosis_correct ? "ok" : "bad"}`}
+                  >
+                    <h3>
+                      Ground truth{" "}
+                      <span className="muted">(hidden from the AI)</span>
+                    </h3>
+                    <p>
+                      Injected: <strong>{groundTruthScenario?.title}</strong> — bad
+                      commit{" "}
+                      <code>{incident.ground_truth_commit_sha?.slice(0, 7)}</code>
+                    </p>
+                    <p className="ground-truth-verdict">
+                      {incident.diagnosis_correct
+                        ? "✓ Diagnosis correct — the AI found the injected commit"
+                        : "✗ Diagnosis incorrect — the AI picked a different commit"}
+                    </p>
                   </div>
                 )}
 
                 {impact && (
                   <div className="impact-card">
-                    <h3>Impact</h3>
+                    <h3>Impact (measured)</h3>
                     <div className="impact-grid">
                       <div>
                         <span className="impact-value">
@@ -176,33 +290,82 @@ export default function App() {
                       </div>
                       <div>
                         <span className="impact-value">
-                          {impact.affected_users_pct}%
+                          {impact.affected_traffic_pct}%
                         </span>
-                        <span className="impact-label">Users affected</span>
+                        <span className="impact-label">Traffic degraded</span>
                       </div>
                       <div>
                         <span className="impact-value">
-                          ${impact.revenue_at_risk_per_hr_usd.toLocaleString()}
-                          /hr
+                          ${impact.est_revenue_at_risk_per_hr_usd.toLocaleString()}/hr
                         </span>
-                        <span className="impact-label">Revenue at risk</span>
+                        <span className="impact-label">Est. revenue at risk</span>
                       </div>
                       <div>
                         <span className="impact-value">
-                          {impact.p95_latency_ms}ms
+                          {impact.requests_affected_per_hr.toLocaleString()}/hr
                         </span>
-                        <span className="impact-label">p95 latency</span>
+                        <span className="impact-label">Requests affected</span>
                       </div>
                     </div>
+                    <p className="impact-method muted">{impact.method}</p>
+                  </div>
+                )}
+
+                {incident.remediation_revert_sha && (
+                  <div className="remediation-card">
+                    <h3>Remediation</h3>
+                    <p>
+                      Reverted <code>{incident.suspected_commit_sha?.slice(0, 7)}</code>{" "}
+                      via revert commit{" "}
+                      <code>{incident.remediation_revert_sha.slice(0, 7)}</code>
+                    </p>
+                    {incident.remediation_verified === true && (
+                      <p className="remediation-verified ok">
+                        ✓ Recovery verified from live metrics
+                      </p>
+                    )}
+                    {incident.remediation_verified === false && (
+                      <p className="remediation-verified bad">
+                        ✗ Metrics did not recover — diagnosis may be wrong
+                      </p>
+                    )}
+                    {detectionStats && recoveryStats && (
+                      <table className="recovery-table">
+                        <thead>
+                          <tr>
+                            <th>endpoint</th>
+                            <th>incident p95</th>
+                            <th>after revert</th>
+                            <th>err before → after</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {Object.entries(detectionStats).map(([group, det]) => {
+                            const rec = recoveryStats[group];
+                            if (!rec) return null;
+                            return (
+                              <tr key={group}>
+                                <td>
+                                  <code>{group}</code>
+                                </td>
+                                <td>{det.p95_ms}ms</td>
+                                <td>{rec.p95_ms}ms</td>
+                                <td>
+                                  {det.error_rate_pct}% → {rec.error_rate_pct}%
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
                   </div>
                 )}
 
                 {incident.runbook_title && (
                   <div className="runbook-card">
                     <h3>Runbook: {incident.runbook_title}</h3>
-                    <p className="runbook-excerpt">
-                      {incident.runbook_excerpt}
-                    </p>
+                    <p className="runbook-excerpt">{incident.runbook_excerpt}</p>
                   </div>
                 )}
               </section>

@@ -1,21 +1,109 @@
-# Autonomous AI Incident Response System
+# Autonomous AI Incident Response
 
-A demo SRE-automation system: when a production alert fires, it identifies the
-likely bad commit via LLM-powered diff reasoning, retrieves the relevant
-runbook via RAG, estimates user/revenue impact, posts a structured Slack
-brief, and — once resolved — generates a full postmortem. A React dashboard
-shows the whole thing happening live.
+A closed-loop AI SRE agent, demonstrated against a real running service:
 
-The GitHub commit analysis is **self-referential**: `ecommerce-app/` is a
-small, real toy storefront that is its own git repository, seeded with a
-handful of genuinely bad commits mixed into realistic noise history. The
-"Inject Fault" button tells the system which fault to hunt for, and the LLM
-has to correctly pick the right commit out of ~15 recent candidates — a real
-reasoning task, not a canned demo.
+**detect → diagnose → remediate → verify → document** — with no step scripted.
 
-Slack and GitHub are mocked by default (no external accounts needed) but
-built behind adapter interfaces so real integrations are a config change, not
-a rewrite. Commit analysis and postmortem generation use real LLM calls.
+## The problem
+
+When production breaks, most of the time-to-recovery is not spent fixing
+anything — it's spent *figuring out what changed*. An on-call engineer gets
+paged, stares at dashboards, digs through recent deploys, guesses at a
+culprit, reverts, and watches the graphs. Mean time to recovery is dominated
+by diagnosis, and diagnosis is exactly the kind of evidence-correlation work
+LLMs are good at — *if* you can trust the loop around them.
+
+This project builds that loop end-to-end, and — the part that matters —
+**verifies the AI's work with measurements instead of taking its word for it**:
+
+1. A toy e-commerce service runs for real, under continuous synthetic load
+   (~450 req/s), with live p95/error-rate metrics per endpoint.
+2. "Inject fault" **actually deploys a bad commit**: it checks out a branch
+   whose git history contains a genuine regression (an N+1 query, a fat-
+   fingered cache TTL, a deleted null-guard, a wrong pool size) buried among
+   noise commits, and restarts the service. The service genuinely degrades.
+3. An **anomaly detector** — which is never told a fault was injected —
+   compares live metrics against a baseline it learned while the service was
+   healthy, and opens an incident with alert text composed entirely from
+   measured numbers.
+4. An LLM reads that alert plus the last ~15 commits (message + full diff)
+   and picks the culprit. The injected scenario is stored only as hidden
+   ground truth; **the diagnosis is scored against it after the LLM commits
+   to an answer**, and the dashboard shows ✓/✗ honestly.
+5. A runbook is retrieved via RAG (local Chroma vector store), impact is
+   estimated **from the measured traffic** (degraded throughput × error/
+   abandonment fractions × average order value), and a Slack brief is posted
+   with a proposed fix.
+6. On one human click of approval, the system **`git revert`s the suspected
+   commit, redeploys, and watches the metrics recover** before resolving.
+   If the diagnosis was wrong, the metrics don't recover (or the revert
+   doesn't apply) and the incident says so — the system cannot grade its own
+   homework.
+7. A full postmortem is generated from the recorded evidence.
+
+A typical incident runs the whole loop in ~90 seconds, live on the dashboard.
+
+## What's real vs. simulated (honesty ledger)
+
+| Component | Real or simulated |
+|---|---|
+| Target app + traffic | **Real** — FastAPI service under continuous closed-loop load; latency/error measurements are genuine |
+| DB latency | **Simulated latency, real concurrency** — each query holds a connection from a real fixed-size pool for a simulated round-trip, so query counts and pool sizing have true consequences under load |
+| Fault injection | **Real deploys** — `git checkout` of a branch with a seeded bad commit + process restart |
+| Anomaly detection | **Real** — learned baseline vs trailing window; it has no knowledge of what (or whether) anything was injected |
+| Commit diagnosis | **Real LLM reasoning** over real git diffs; it can be (and sometimes is) wrong |
+| Runbook retrieval | **Real vector search** (Chroma, local embeddings) |
+| Impact estimate | **Measured** throughput/latency/errors × configured business constants (AOV) |
+| Remediation + verification | **Real** — `git revert`, redeploy, recovery judged from live metrics against the learned baseline |
+| Slack / GitHub | **Mocked by default** behind `Protocol` adapters; real implementations exist and swap in via env vars |
+| Postmortem | **Real LLM generation** from recorded incident evidence |
+
+The failure modes are real too: a wrong diagnosis leads to a revert that
+either conflicts (caught, aborted, service restored, incident marked
+"remediation failed") or applies without fixing anything (caught by the
+metric verifier). Both paths are first-class UI states, not crashes.
+
+## Architecture
+
+```
+┌─────────────────────────────  backend (FastAPI)  ─────────────────────────────┐
+│                                                                               │
+│  live/traffic.py ──► ecommerce-app (child uvicorn process, :8001)             │
+│   32 virtual users      ▲ git checkout / revert + restart                     │
+│        │                │                                                     │
+│        ▼             live/app_manager.py ◄──────────── pipeline/remediation   │
+│  live/metrics.py                                             ▲                │
+│   rolling windows,      ┌──────────────────────────────┐     │ approve        │
+│   p95 / error rate      │ pipeline/orchestrator        │     │                │
+│        │                │  commit_analysis (LLM+diffs) │     │                │
+│        ▼                │  runbook_rag     (Chroma)    │   incidents API      │
+│  live/detector.py ────► │  impact_estimator (measured) │ ──► SSE stream ──► React
+│   baseline vs window,   │  slack_brief     (adapter)   │       dashboard      │
+│   opens incidents       │  postmortem      (LLM)       │                      │
+│                         └──────────────────────────────┘                      │
+│  state_machine.py — every status change validated, timelined, broadcast       │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+- `backend/app/live/` — the environment: target-app process manager
+  (deploy/revert/reset), closed-loop load generator, rolling metrics store,
+  anomaly detector.
+- `backend/app/pipeline/` — the agent: diagnosis, RAG, impact, brief,
+  remediation + verification, postmortem.
+- `backend/app/state_machine.py` — single choke point for incident status
+  transitions (`firing → analyzing → briefed → remediating → resolved →
+  postmortem_generated`, `closed` as operator override); every transition
+  writes a timeline event and broadcasts over SSE.
+- `backend/app/seed/seed_ecommerce_repo.py` — builds the target app's git
+  repo: healthy `main` plus four neutral-named `deploy/r-*` branches, each
+  hiding one real regression among noise commits. The app is genuinely
+  runnable; its performance characteristics are what the detector measures.
+- `backend/app/adapters/` — `GitHubAdapter` / `SlackAdapter` `Protocol`s with
+  local/mock defaults and real API implementations
+  (`tests/test_adapter_conformance.py` runs the same suite against both).
+- `frontend/` — React dashboard: live per-endpoint sparklines vs baseline,
+  incident timeline over SSE, diagnosis + ground-truth reveal, remediation
+  approval, before/after recovery table, Slack brief, postmortem.
 
 ## Setup
 
@@ -24,59 +112,48 @@ Requires Python 3.12, Node 18+, and [uv](https://docs.astral.sh/uv/).
 ```bash
 # 1. Get a free Gemini API key (no credit card required):
 #    https://aistudio.google.com/apikey
-cp .env.example .env
-# edit .env and paste your key into GEMINI_API_KEY
+cp .env.example .env      # paste your key into GEMINI_API_KEY
 
-# 2. Backend
+# 2. Backend (also seeds + runs the target app and load generator)
 cd backend
 uv venv --python 3.12
 uv sync --group dev
 source .venv/bin/activate
-
-# 3. Seed the ecommerce-app git repo (bad commits + noise history)
-python -m app.seed.seed_ecommerce_repo
-
-# 4. Seed the runbooks into the local Chroma vector store
-python -m app.seed.seed_runbooks
-
-# 5. Run the backend
+python -m app.seed.seed_runbooks     # one-time: runbooks -> Chroma
 uvicorn app.main:app --port 8000
 
-# 6. In a separate terminal: frontend
+# 3. Frontend (separate terminal)
 cd frontend
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173, click a fault card, and watch the incident
-timeline update live.
+Open http://localhost:5173. The detector needs ~1 minute of healthy traffic
+to learn its baseline; then pick a fault card and watch:
 
-## Architecture
+1. The deployed branch changes in the environment bar; metrics degrade for real.
+2. The detector opens an incident (~15–30s) with measured alert text.
+3. The LLM names a commit, with reasoning and confidence; ground truth is
+   revealed alongside it (✓/✗).
+4. Approve the remediation and watch the before/after recovery table fill in
+   from live metrics, followed by the postmortem.
 
-- `backend/app/pipeline/` — the 5-step pipeline: commit analysis, runbook
-  RAG, impact estimation, Slack brief, postmortem generation.
-  `orchestrator.py` runs it as a FastAPI `BackgroundTask` per incident.
-- `backend/app/adapters/` — `GitHubAdapter` and `SlackAdapter` are defined as
-  `Protocol`s in `github/base.py` / `slack/base.py`. `local_git_adapter.py`
-  and `mock_slack_adapter.py` are the defaults; `real_github_adapter.py` and
-  `real_slack_adapter.py` implement the same interface against the real
-  APIs. `adapters/factory.py` picks mock vs real from env vars.
-- `backend/app/state_machine.py` — the single choke point for incident
-  status transitions (`firing → analyzing → briefed → resolved →
-  postmortem_generated`); every transition also writes a `TimelineEvent` and
-  broadcasts it over SSE.
-- `backend/app/seed/` — `seed_ecommerce_repo.py` programmatically builds
-  `ecommerce-app/`'s git history (18 commits: baseline + noise + 4 seeded bad
-  commits at varying depths). `seed_runbooks.py` ingests `runbooks/*.md` into
-  a local persistent Chroma collection.
-- `frontend/src/` — React dashboard. `api.ts`'s `useIncidentStream` hook
-  drives live updates via Server-Sent Events (`GET
-  /api/incidents/{id}/stream`).
+`POST /api/environment/reset` (or the Reset button) returns to pristine main.
+
+## Tests
+
+```bash
+cd backend && source .venv/bin/activate && pytest tests/ -v
+```
+
+Covers the state machine (including failure/override paths), the diagnosis
+pipeline with a mocked LLM (both correct and wrong diagnoses), metrics
+windowing, detector breach logic (including the jitter guard and the
+no-ground-truth-leak property of alert text), recovery verification, and
+adapter conformance (real adapters exercised automatically when credentials
+are present).
 
 ## Going live with real Slack/GitHub
-
-Both adapters are mocked by default so the demo runs with zero external
-accounts. To use the real APIs instead:
 
 ```bash
 # .env
@@ -89,15 +166,20 @@ SLACK_ADAPTER=real
 SLACK_BOT_TOKEN=xoxb-...
 ```
 
-No code changes are needed — the pipeline only ever depends on the
-`GitHubAdapter`/`SlackAdapter` protocols, and `adapters/factory.py` swaps the
-concrete implementation based on these env vars.
-`tests/test_adapter_conformance.py` runs the same behavioral test suite
-against both the mock and real adapters (the real ones are skipped
-automatically when credentials aren't present).
+No code changes — the pipeline depends only on the adapter `Protocol`s and
+`adapters/factory.py` swaps implementations from env vars.
 
-## Tests
+## Design notes
 
-```bash
-cd backend && source .venv/bin/activate && pytest tests/ -v
-```
+- **The AI is never told the answer.** Alert text is composed from metrics;
+  branch names are neutral (`deploy/r-142`); the injected scenario lives only
+  in `ground_truth_*` fields used for post-hoc scoring. The prompt applies
+  standard RCA priors (recency, config-change suspicion) rather than
+  scenario-specific hints.
+- **Verification over trust.** Remediation is only "done" when the same
+  detector baseline says the service recovered. Wrong diagnoses surface as
+  failed remediations, visibly.
+- **Human-in-the-loop where it matters.** Detection, diagnosis, and evidence
+  gathering are autonomous; the revert requires one explicit approval.
+- **Everything free to run.** Gemini free tier (with model fallback chain),
+  local Chroma embeddings, SQLite, no external accounts.

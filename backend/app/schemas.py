@@ -10,7 +10,9 @@ class InjectFaultRequest(BaseModel):
 
 
 class InjectFaultResponse(BaseModel):
-    incident_id: str
+    deployed_branch: str
+    head_sha: str | None
+    note: str
 
 
 class ResolveIncidentRequest(BaseModel):
@@ -27,21 +29,29 @@ class TimelineEventOut(BaseModel):
 
 class IncidentSummaryOut(BaseModel):
     id: str
-    fault_scenario_id: str
     status: IncidentStatus
+    ground_truth_scenario_id: str | None
+    diagnosis_correct: bool | None
     created_at: datetime
     updated_at: datetime
 
 
 class IncidentDetailOut(BaseModel):
     id: str
-    fault_scenario_id: str
     status: IncidentStatus
     error_message: str | None
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
     postmortem_generated_at: datetime | None
+
+    detected_alert_text: str
+    baseline_json: str | None
+    detection_stats_json: str | None
+
+    ground_truth_scenario_id: str | None
+    ground_truth_commit_sha: str | None
+    diagnosis_correct: bool | None
 
     suspected_commit_sha: str | None
     suspected_commit_message: str | None
@@ -56,6 +66,11 @@ class IncidentDetailOut(BaseModel):
 
     impact_json: str | None
     slack_brief_json: str | None
+
+    remediation_revert_sha: str | None
+    remediation_verified: bool | None
+    recovery_stats_json: str | None
+
     resolution_notes: str | None
     postmortem_markdown: str | None
 
@@ -63,4 +78,5 @@ class IncidentDetailOut(BaseModel):
 class FaultScenarioOut(BaseModel):
     id: str
     title: str
-    alert_description: str
+    description: str
+    deploy_branch: str

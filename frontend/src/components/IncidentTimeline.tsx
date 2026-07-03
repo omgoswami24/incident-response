@@ -1,14 +1,19 @@
 import type { TimelineEvent, TimelineEventType } from "../types";
 
 const ICONS: Record<TimelineEventType, string> = {
-  fault_injected: "🚨",
+  alert_detected: "🚨",
   analyzing_started: "🔍",
   commit_identified: "🔗",
   runbook_retrieved: "📖",
   impact_estimated: "📊",
   slack_brief_posted: "💬",
+  remediation_started: "🛠️",
+  remediation_applied: "⏪",
+  recovery_verified: "📈",
+  remediation_failed: "🚧",
   resolved: "✅",
   postmortem_generated: "📝",
+  closed: "🔒",
   error: "⚠️",
 };
 

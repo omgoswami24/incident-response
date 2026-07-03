@@ -1,9 +1,57 @@
+import json
 from datetime import datetime, timezone
 
 from app.adapters.github.base import CommitInfo
 from app.adapters.slack.mock_slack_adapter import MockSlackAdapter
 from app.models import Incident, IncidentStatus
-from app.pipeline import commit_analysis, orchestrator, postmortem, runbook_rag
+from app.pipeline import commit_analysis, orchestrator, postmortem
+
+BAD_SHA = "bad" * 13 + "a"
+
+BASELINE = {
+    "POST /checkout/summary": {
+        "count": 500,
+        "rps": 40.0,
+        "p50_ms": 20.0,
+        "p95_ms": 26.0,
+        "error_rate_pct": 0.0,
+    },
+    "GET /products": {
+        "count": 700,
+        "rps": 60.0,
+        "p50_ms": 1.5,
+        "p95_ms": 3.0,
+        "error_rate_pct": 0.0,
+    },
+}
+
+DETECTION = {
+    "POST /checkout/summary": {
+        "count": 480,
+        "rps": 38.0,
+        "p50_ms": 120.0,
+        "p95_ms": 170.0,
+        "error_rate_pct": 0.0,
+    },
+    "GET /products": {
+        "count": 700,
+        "rps": 60.0,
+        "p50_ms": 1.5,
+        "p95_ms": 3.2,
+        "error_rate_pct": 0.0,
+    },
+}
+
+
+def make_incident(**overrides) -> Incident:
+    defaults = dict(
+        detected_alert_text="AUTO-DETECTED ANOMALY — checkout p95 170ms vs baseline 26ms",
+        baseline_json=json.dumps(BASELINE),
+        detection_stats_json=json.dumps(DETECTION),
+        ground_truth_commit_sha=BAD_SHA,
+    )
+    defaults.update(overrides)
+    return Incident(**defaults)
 
 
 class FakeGitHubAdapter:
@@ -12,7 +60,7 @@ class FakeGitHubAdapter:
     def __init__(self):
         self._commits = [
             CommitInfo(
-                sha="bad" * 13 + "a",
+                sha=BAD_SHA,
                 message="perf: fetch product details individually during checkout summary",
                 author="Test Author",
                 date=datetime.now(timezone.utc),
@@ -37,7 +85,7 @@ class FakeGitHubAdapter:
         return next(c for c in self._commits if c.sha == sha)
 
 
-def test_run_pipeline_reaches_briefed_with_mocked_adapters_and_llm(session, monkeypatch):
+def test_run_pipeline_reaches_briefed_and_scores_diagnosis(session, monkeypatch):
     monkeypatch.setattr(orchestrator, "engine", session.get_bind())
     monkeypatch.setattr(orchestrator, "get_github_adapter", lambda: FakeGitHubAdapter())
     monkeypatch.setattr(orchestrator, "get_slack_adapter", lambda: MockSlackAdapter())
@@ -51,7 +99,7 @@ def test_run_pipeline_reaches_briefed_with_mocked_adapters_and_llm(session, monk
         },
     )
     monkeypatch.setattr(
-        runbook_rag,
+        orchestrator,
         "query_runbook",
         lambda *a, **k: {
             "runbook_id": "checkout-slow-query-runbook.md",
@@ -60,7 +108,7 @@ def test_run_pipeline_reaches_briefed_with_mocked_adapters_and_llm(session, monk
         },
     )
 
-    incident = Incident(fault_scenario_id="checkout-n-plus-one")
+    incident = make_incident()
     session.add(incident)
     session.commit()
     session.refresh(incident)
@@ -69,14 +117,47 @@ def test_run_pipeline_reaches_briefed_with_mocked_adapters_and_llm(session, monk
 
     session.refresh(incident)
     assert incident.status == IncidentStatus.briefed
-    assert incident.suspected_commit_message == (
-        "perf: fetch product details individually during checkout summary"
-    )
+    assert incident.suspected_commit_sha == BAD_SHA
+    assert incident.diagnosis_correct is True
     assert incident.commit_analysis_confidence == 0.92
     assert incident.runbook_id == "checkout-slow-query-runbook.md"
-    assert incident.impact_json is not None
-    assert incident.slack_brief_json is not None
     assert incident.error_message is None
+
+    impact = json.loads(incident.impact_json)
+    assert impact["severity"] == "high"
+    assert "POST /checkout/summary" in impact["degraded_endpoints"]
+    assert "GET /products" not in impact["degraded_endpoints"]
+    assert impact["est_revenue_at_risk_per_hr_usd"] > 0
+
+    brief = json.loads(incident.slack_brief_json)
+    assert brief["ok"] is True
+
+
+def test_run_pipeline_scores_wrong_diagnosis(session, monkeypatch):
+    monkeypatch.setattr(orchestrator, "engine", session.get_bind())
+    monkeypatch.setattr(orchestrator, "get_github_adapter", lambda: FakeGitHubAdapter())
+    monkeypatch.setattr(orchestrator, "get_slack_adapter", lambda: MockSlackAdapter())
+    monkeypatch.setattr(
+        commit_analysis,
+        "complete_json",
+        lambda *a, **k: {
+            "suspected_candidate_number": 1,  # the README noise commit
+            "reasoning": "wrong pick",
+            "confidence": 0.4,
+        },
+    )
+    monkeypatch.setattr(orchestrator, "query_runbook", lambda *a, **k: None)
+
+    incident = make_incident()
+    session.add(incident)
+    session.commit()
+    session.refresh(incident)
+
+    orchestrator.run_pipeline(incident.id)
+
+    session.refresh(incident)
+    assert incident.status == IncidentStatus.briefed
+    assert incident.diagnosis_correct is False
 
 
 def test_run_pipeline_records_error_on_llm_failure(session, monkeypatch):
@@ -88,7 +169,7 @@ def test_run_pipeline_records_error_on_llm_failure(session, monkeypatch):
 
     monkeypatch.setattr(commit_analysis, "complete_json", boom)
 
-    incident = Incident(fault_scenario_id="checkout-n-plus-one")
+    incident = make_incident()
     session.add(incident)
     session.commit()
     session.refresh(incident)
@@ -104,10 +185,7 @@ def test_run_postmortem_generates_markdown_with_mocked_llm(session, monkeypatch)
     monkeypatch.setattr(orchestrator, "engine", session.get_bind())
     monkeypatch.setattr(postmortem, "complete", lambda *a, **k: "## Summary\nAll good now.")
 
-    incident = Incident(
-        fault_scenario_id="checkout-n-plus-one",
-        status=IncidentStatus.resolved,
-    )
+    incident = make_incident(status=IncidentStatus.resolved)
     session.add(incident)
     session.commit()
     session.refresh(incident)

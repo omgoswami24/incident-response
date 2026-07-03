@@ -8,11 +8,18 @@ from app.models import Incident, IncidentStatus, TimelineEvent, TimelineEventTyp
 from app.schemas import TimelineEventOut
 
 ALLOWED_TRANSITIONS: dict[IncidentStatus, set[IncidentStatus]] = {
-    IncidentStatus.firing: {IncidentStatus.analyzing},
-    IncidentStatus.analyzing: {IncidentStatus.briefed},
-    IncidentStatus.briefed: {IncidentStatus.resolved},
-    IncidentStatus.resolved: {IncidentStatus.postmortem_generated},
+    IncidentStatus.firing: {IncidentStatus.analyzing, IncidentStatus.closed},
+    IncidentStatus.analyzing: {IncidentStatus.briefed, IncidentStatus.closed},
+    # manual resolve is still allowed from briefed (skip auto-remediation)
+    IncidentStatus.briefed: {
+        IncidentStatus.remediating,
+        IncidentStatus.resolved,
+        IncidentStatus.closed,
+    },
+    IncidentStatus.remediating: {IncidentStatus.resolved, IncidentStatus.closed},
+    IncidentStatus.resolved: {IncidentStatus.postmortem_generated, IncidentStatus.closed},
     IncidentStatus.postmortem_generated: set(),
+    IncidentStatus.closed: set(),
 }
 
 
