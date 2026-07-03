@@ -1,29 +1,28 @@
 import type { TimelineEvent, TimelineEventType } from "../types";
 
-const ICONS: Record<TimelineEventType, string> = {
-  alert_detected: "🚨",
-  analyzing_started: "🔍",
-  commit_identified: "🔗",
-  runbook_retrieved: "📖",
-  impact_estimated: "📊",
-  slack_brief_posted: "💬",
-  remediation_started: "🛠️",
-  remediation_applied: "⏪",
-  recovery_verified: "📈",
-  remediation_failed: "🚧",
-  resolved: "✅",
-  postmortem_generated: "📝",
-  closed: "🔒",
-  error: "⚠️",
+// marker color category per event type — dots, not emoji
+const CATEGORIES: Record<TimelineEventType, string> = {
+  alert_detected: "alert",
+  analyzing_started: "analysis",
+  commit_identified: "analysis",
+  runbook_retrieved: "doc",
+  impact_estimated: "analysis",
+  slack_brief_posted: "doc",
+  remediation_started: "remediation",
+  remediation_applied: "remediation",
+  recovery_verified: "success",
+  remediation_failed: "error",
+  resolved: "success",
+  postmortem_generated: "doc",
+  closed: "doc",
+  error: "error",
 };
 
-function formatTime(ts: string): string {
-  return new Date(ts).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
+const timeFormat = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
 
 export function IncidentTimeline({ events }: { events: TimelineEvent[] }) {
   if (events.length === 0) {
@@ -33,11 +32,17 @@ export function IncidentTimeline({ events }: { events: TimelineEvent[] }) {
   return (
     <ol className="timeline">
       {events.map((e) => (
-        <li key={e.id} className={`timeline-item ${e.type === "error" ? "timeline-item-error" : ""}`}>
-          <span className="timeline-icon">{ICONS[e.type] ?? "•"}</span>
+        <li
+          key={e.id}
+          className={`timeline-item ${e.type === "error" ? "timeline-item-error" : ""}`}
+        >
+          <span
+            className={`timeline-marker cat-${CATEGORIES[e.type] ?? "doc"}`}
+            aria-hidden="true"
+          />
           <div className="timeline-body">
             <div className="timeline-title">{e.title}</div>
-            <div className="timeline-time">{formatTime(e.ts)}</div>
+            <div className="timeline-time">{timeFormat.format(new Date(e.ts))}</div>
           </div>
         </li>
       ))}

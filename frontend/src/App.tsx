@@ -60,7 +60,6 @@ export default function App() {
       setSelectedId(null);
     } catch (err) {
       console.error(err);
-      window.alert(`Failed to inject fault: ${err}`);
     } finally {
       setInjecting(false);
     }
@@ -120,10 +119,19 @@ export default function App() {
   return (
     <div className="app">
       <aside className="sidebar">
-        <h1>Incident Response</h1>
-        <p className="muted">
-          Closed-loop AI SRE agent: detect → diagnose → remediate → verify
+        <div className="wordmark">
+          <span className="wordmark-glyph" aria-hidden="true">
+            ⌁
+          </span>
+          <h1>Incident Response</h1>
+        </div>
+        <p className="sidebar-tagline">
+          Closed-loop SRE agent — detect, diagnose, remediate, verify
         </p>
+        <div className="sidebar-section-label">
+          <span>Incidents</span>
+          <span className="count">{incidents.length}</span>
+        </div>
         <IncidentList
           incidents={incidents}
           scenarios={scenarios}
@@ -131,7 +139,7 @@ export default function App() {
           onSelect={setSelectedId}
         />
         <button className="new-incident-button" onClick={() => setSelectedId(null)}>
-          + Inject a fault
+          + Inject a Fault
         </button>
       </aside>
 
@@ -151,11 +159,31 @@ export default function App() {
         )}
 
         {!selectedId && (
-          <FaultPicker
-            scenarios={scenarios}
-            onInject={handleInject}
-            disabled={injecting || awaitingSince != null || !metrics?.baseline_ready}
-          />
+          <>
+            <ol className="how-it-works" aria-label="How this demo works">
+              <li>
+                <b>Deploy.</b> A fault card ships a real bad commit to the running
+                service below.
+              </li>
+              <li>
+                <b>Detect.</b> The charts degrade; the anomaly detector opens an
+                incident on its own (~20s).
+              </li>
+              <li>
+                <b>Diagnose.</b> The AI names the offending commit from diffs alone
+                — scored against ground truth.
+              </li>
+              <li>
+                <b>Approve the fix.</b> One click reverts, redeploys, and recovery
+                is verified from live metrics.
+              </li>
+            </ol>
+            <FaultPicker
+              scenarios={scenarios}
+              onInject={handleInject}
+              disabled={injecting || awaitingSince != null || !metrics?.baseline_ready}
+            />
+          </>
         )}
         {!selectedId && !metrics?.baseline_ready && (
           <p className="muted baseline-note">
@@ -183,14 +211,15 @@ export default function App() {
                   >
                     {busy === "remediate"
                       ? "Approving…"
-                      : `Approve remediation: git revert ${incident.suspected_commit_sha?.slice(0, 7)}`}
+                      : `Approve Fix: git revert ${incident.suspected_commit_sha?.slice(0, 7)}`}
                   </button>
                   <button
-                    className="resolve-button resolve-button-header"
+                    className="resolve-button"
                     onClick={handleResolve}
                     disabled={busy != null}
+                    title="Skip the automated revert — mark the incident resolved yourself"
                   >
-                    Resolve manually
+                    Resolve Manually
                   </button>
                 </>
               )}
@@ -211,7 +240,7 @@ export default function App() {
                     className="retry-button"
                     onClick={() => retryIncident(incident.id).catch(console.error)}
                   >
-                    Retry pipeline
+                    Retry Pipeline
                   </button>
                 )}
               </div>
@@ -364,7 +393,7 @@ export default function App() {
 
                 {incident.runbook_title && (
                   <div className="runbook-card">
-                    <h3>Runbook: {incident.runbook_title}</h3>
+                    <h3>{incident.runbook_title.replace(/^Runbook:\s*/i, "Runbook — ")}</h3>
                     <p className="runbook-excerpt">{incident.runbook_excerpt}</p>
                   </div>
                 )}

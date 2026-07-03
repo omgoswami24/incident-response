@@ -34,7 +34,7 @@ export function EnvironmentBar({
       )}
       <span className="env-spacer" />
       <button className="env-reset-button" onClick={onReset} disabled={resetting}>
-        {resetting ? "Resetting…" : "Reset environment"}
+        {resetting ? "Resetting…" : "Reset Environment"}
       </button>
     </div>
   );

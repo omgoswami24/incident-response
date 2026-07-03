@@ -8,7 +8,9 @@ function renderMrkdwn(text: string): string {
     .replace(/>/g, "&gt;")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*([^*]+)\*/g, "<strong>$1</strong>")
-    .replace(/_([^_]+)_/g, "<em>$1</em>")
+    // italics only when the underscores wrap whole words — never inside
+    // identifiers like CACHE_TTL_SECONDS
+    .replace(/(^|[\s>])_([^_\n]+)_(?=[\s.,;:!?)]|$)/gm, "$1<em>$2</em>")
     .replace(/\n/g, "<br/>");
 }
 

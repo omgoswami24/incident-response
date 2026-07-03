@@ -25,12 +25,26 @@ function Sparkline({
     .filter(Boolean)
     .join(" ");
 
+  // area wash under the line, anchored to the bottom edge
+  const activeIndices = buckets
+    .map((b, i) => (b.count > 0 ? i : null))
+    .filter((i): i is number => i !== null);
+  const areaPoints =
+    activeIndices.length > 1
+      ? `${x(activeIndices[0]).toFixed(1)},${H} ${points} ${x(
+          activeIndices[activeIndices.length - 1],
+        ).toFixed(1)},${H}`
+      : "";
+
   return (
     <svg
       className="sparkline"
       viewBox={`0 0 ${W} ${H}`}
       preserveAspectRatio="none"
+      role="img"
+      aria-label="p95 latency over the last 5 minutes vs learned baseline"
     >
+      {areaPoints && <polygon points={areaPoints} className="sparkline-area" />}
       {baselineP95 != null && (
         <line
           x1={0}
