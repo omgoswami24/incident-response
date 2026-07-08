@@ -92,10 +92,15 @@ export function MetricsPanel({ metrics }: { metrics: Metrics | null }) {
         {groups.map((group) => {
           const cur = metrics.current[group];
           const base = metrics.baseline?.[group] ?? null;
+          // Mirror the backend detector's breach rule (live/detector.py) so
+          // the chip lights up only when the detector would actually consider
+          // it a breach: 2x baseline AND a +30ms absolute floor (which stops
+          // fast, low-baseline endpoints from flickering on normal jitter).
           const degraded =
             cur &&
             base &&
-            (cur.p95_ms > 2 * base.p95_ms + 1 || cur.error_rate_pct > 5);
+            ((cur.p95_ms > 2 * base.p95_ms && cur.p95_ms > base.p95_ms + 30) ||
+              cur.error_rate_pct > Math.max(5, base.error_rate_pct + 5));
           return (
             <div key={group} className={`metric-card ${degraded ? "degraded" : ""}`}>
               <div className="metric-card-title">
@@ -107,14 +112,18 @@ export function MetricsPanel({ metrics }: { metrics: Metrics | null }) {
                 baselineP95={base?.p95_ms ?? null}
               />
               <div className="metric-card-stats">
-                <span>
-                  p95 <strong>{cur ? `${cur.p95_ms}ms` : "—"}</strong>
-                  {base && <span className="muted"> / base {base.p95_ms}ms</span>}
-                </span>
-                <span className={cur && cur.error_rate_pct > 0 ? "err-text" : ""}>
-                  err <strong>{cur ? `${cur.error_rate_pct}%` : "—"}</strong>
-                </span>
-                <span className="muted">{cur ? `${cur.rps} rps` : ""}</span>
+                <div className="stat-primary">
+                  <span>
+                    p95 <strong>{cur ? `${cur.p95_ms}ms` : "—"}</strong>
+                  </span>
+                  <span className={cur && cur.error_rate_pct > 0 ? "err-text" : "muted"}>
+                    <strong>{cur ? `${cur.error_rate_pct}%` : "—"}</strong> err
+                  </span>
+                </div>
+                <div className="stat-secondary">
+                  <span>{base ? `base ${base.p95_ms}ms` : "learning…"}</span>
+                  <span>{cur ? `${cur.rps} rps` : ""}</span>
+                </div>
               </div>
             </div>
           );

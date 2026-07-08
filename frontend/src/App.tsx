@@ -160,24 +160,34 @@ export default function App() {
 
         {!selectedId && (
           <>
-            <ol className="how-it-works" aria-label="How this demo works">
-              <li>
-                <b>Deploy.</b> A fault card ships a real bad commit to the running
-                service below.
-              </li>
-              <li>
-                <b>Detect.</b> The charts degrade; the anomaly detector opens an
-                incident on its own (~20s).
-              </li>
-              <li>
-                <b>Diagnose.</b> The AI names the offending commit from diffs alone
-                — scored against ground truth.
-              </li>
-              <li>
-                <b>Approve the fix.</b> One click reverts, redeploys, and recovery
-                is verified from live metrics.
-              </li>
-            </ol>
+            <div className="pipeline-strip" aria-label="How the closed loop works">
+              <div className="pipeline-stage">
+                <span className="pipeline-stage-name">deploy</span>
+                <span className="pipeline-stage-desc">
+                  A fault card ships a real bad commit to the running service.
+                </span>
+              </div>
+              <div className="pipeline-stage">
+                <span className="pipeline-stage-name">detect</span>
+                <span className="pipeline-stage-desc">
+                  Metrics degrade; the detector opens an incident on its own.
+                </span>
+              </div>
+              <div className="pipeline-stage">
+                <span className="pipeline-stage-name">diagnose</span>
+                <span className="pipeline-stage-desc">
+                  The AI names the commit from diffs alone, scored against ground
+                  truth.
+                </span>
+              </div>
+              <div className="pipeline-stage">
+                <span className="pipeline-stage-name">verify</span>
+                <span className="pipeline-stage-desc">
+                  One approval reverts, redeploys, and confirms recovery from live
+                  metrics.
+                </span>
+              </div>
+            </div>
             <FaultPicker
               scenarios={scenarios}
               onInject={handleInject}
