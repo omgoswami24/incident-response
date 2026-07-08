@@ -20,7 +20,25 @@ from app.pipeline.impact_estimator import estimate_impact
 from app.pipeline.postmortem import build_postmortem
 from app.pipeline.runbook_rag import query_runbook
 from app.pipeline.slack_brief import build_slack_blocks
-from app.state_machine import record_error, transition
+from app.state_machine import InvalidTransitionError, record_error, transition
+
+TERMINAL_STATUSES = {IncidentStatus.closed, IncidentStatus.postmortem_generated}
+
+
+def _abandoned_if_superseded(session: Session, incident: Incident, incident_id: str) -> bool:
+    """A concurrent reset / new fault injection can close an incident while its
+    pipeline is still running. When that happens the next transition raises;
+    treat it as a clean abort rather than a failure to record against the
+    (now closed) incident."""
+    session.rollback()
+    session.refresh(incident)
+    if incident.status in TERMINAL_STATUSES:
+        logger.info(
+            "pipeline for incident %s abandoned — incident closed/superseded mid-flight",
+            incident_id,
+        )
+        return True
+    return False
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +142,11 @@ def run_pipeline(incident_id: str) -> None:
                 f"Slack brief posted to {settings.slack_channel} — awaiting remediation approval",
             )
 
+        except InvalidTransitionError:
+            if _abandoned_if_superseded(session, incident, incident_id):
+                return
+            logger.exception("Pipeline failed for incident %s", incident_id)
+            record_error(session, incident, "Internal error: invalid state transition")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Pipeline failed for incident %s", incident_id)
             record_error(session, incident, str(exc))
@@ -156,6 +179,11 @@ def run_postmortem(incident_id: str) -> None:
                 TimelineEventType.postmortem_generated,
                 "Postmortem generated",
             )
+        except InvalidTransitionError:
+            if _abandoned_if_superseded(session, incident, incident_id):
+                return
+            logger.exception("Postmortem generation failed for incident %s", incident_id)
+            record_error(session, incident, "Internal error: invalid state transition")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Postmortem generation failed for incident %s", incident_id)
             record_error(session, incident, str(exc))

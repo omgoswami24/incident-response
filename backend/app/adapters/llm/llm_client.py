@@ -63,6 +63,11 @@ def complete(system: str, user: str, max_tokens: int = 2000) -> str:
                     time.sleep(RETRY_BASE_DELAY_SECONDS * (2**attempt))
         logger.warning("model %s exhausted, falling back to next in chain", model)
 
+    if isinstance(last_error, litellm.RateLimitError):
+        raise RuntimeError(
+            "LLM rate-limited: the free Gemini tier is temporarily out of quota. "
+            "Wait ~60s and retry the pipeline (or set a paid GEMINI_API_KEY)."
+        ) from last_error
     raise last_error
 
 

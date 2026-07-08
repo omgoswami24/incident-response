@@ -1,5 +1,6 @@
 from app.adapters.github.base import GitHubAdapter
 from app.adapters.llm.llm_client import complete_json
+from app.live.app_manager import manager
 
 SYSTEM_PROMPT = """You are an SRE incident-response assistant. Given a production \
 alert (composed from live service metrics) and a numbered list of recent commits \
@@ -22,14 +23,20 @@ Respond with ONLY a JSON object, no other text:
 
 
 def analyze_commits(adapter: GitHubAdapter, alert_text: str, limit: int = 15) -> dict:
-    commits = adapter.list_recent_commits(limit=limit)
+    # Snapshot every commit and its diff up front, holding the repo lock so a
+    # concurrent deploy/reset (which reseeds the repo) can't delete it mid-read.
+    # The slow LLM call runs AFTER the lock is released against this snapshot,
+    # and we reuse the snapshotted diff instead of re-reading git — otherwise a
+    # reseed during the LLM call would invalidate the suspected SHA.
+    with manager.repo_lock:
+        commits = adapter.list_recent_commits(limit=limit)
+        diffs = {c.sha: adapter.get_diff(c.sha) for c in commits}
 
     candidates = []
     for i, c in enumerate(commits):
-        diff = adapter.get_diff(c.sha)
         candidates.append(
             f"### Candidate {i}\nMessage: {c.message}\nAuthor: {c.author}\nDate: {c.date}\n"
-            f"Files changed: {', '.join(c.files_changed)}\nDiff:\n```diff\n{diff}\n```"
+            f"Files changed: {', '.join(c.files_changed)}\nDiff:\n```diff\n{diffs[c.sha]}\n```"
         )
 
     user_prompt = (
@@ -43,13 +50,12 @@ def analyze_commits(adapter: GitHubAdapter, alert_text: str, limit: int = 15) ->
     if not 0 <= index < len(commits):
         raise ValueError(f"LLM returned out-of-range candidate number: {index}")
     suspected = commits[index]
-    diff = adapter.get_diff(suspected.sha)
 
     return {
         "sha": suspected.sha,
         "message": suspected.message,
         "author": suspected.author,
-        "diff": diff,
+        "diff": diffs[suspected.sha],
         "reasoning": result["reasoning"],
         "confidence": float(result["confidence"]),
     }

@@ -19,7 +19,7 @@ from app.live.app_manager import RevertFailedError, manager
 from app.live.metrics import store
 from app.models import Incident, IncidentStatus, TimelineEventType
 from app.pipeline.orchestrator import run_postmortem
-from app.state_machine import record_error, transition
+from app.state_machine import InvalidTransitionError, record_error, transition
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +175,21 @@ def run_remediation(incident_id: str) -> None:
                 )
                 return
 
+        except InvalidTransitionError:
+            session.rollback()
+            session.refresh(incident)
+            if incident.status in (
+                IncidentStatus.closed,
+                IncidentStatus.postmortem_generated,
+            ):
+                logger.info(
+                    "remediation for incident %s abandoned — incident closed/superseded",
+                    incident_id,
+                )
+                return
+            logger.exception("Remediation failed for incident %s", incident_id)
+            record_error(session, incident, "Internal error: invalid state transition")
+            return
         except Exception as exc:  # noqa: BLE001
             logger.exception("Remediation failed for incident %s", incident_id)
             record_error(session, incident, str(exc))

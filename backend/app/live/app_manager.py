@@ -35,7 +35,10 @@ class RevertFailedError(RuntimeError):
 class TargetAppManager:
     def __init__(self) -> None:
         self._proc: subprocess.Popen | None = None
-        self._lock = threading.RLock()
+        # Guards both process control and repo mutation (checkout/revert/reseed).
+        # The diagnosis pipeline also acquires this before reading git, so a
+        # reseed can't delete the repo out from under an in-flight `git diff`.
+        self.repo_lock = threading.RLock()
         self.deployed_branch: str = "main"
         self.deployed_scenario_id: str | None = None
         self.last_deploy_ts: float = 0.0
@@ -46,7 +49,7 @@ class TargetAppManager:
         return self._proc is not None and self._proc.poll() is None
 
     def start(self) -> None:
-        with self._lock:
+        with self.repo_lock:
             if self.is_running():
                 return
             self._proc = subprocess.Popen(
@@ -82,7 +85,7 @@ class TargetAppManager:
         raise TargetAppError("target app did not become healthy in time")
 
     def stop(self) -> None:
-        with self._lock:
+        with self.repo_lock:
             if self._proc is not None and self._proc.poll() is None:
                 self._proc.terminate()
                 try:
@@ -108,7 +111,7 @@ class TargetAppManager:
         scenario's deploy branch, and restart the service on it."""
         from app.seed.seed_ecommerce_repo import seed
 
-        with self._lock:
+        with self.repo_lock:
             self.stop()
             seed()
             self._repo().git.checkout(scenario.deploy_branch)
@@ -122,7 +125,7 @@ class TargetAppManager:
         """git-revert a commit on the currently deployed branch and redeploy.
         Returns the sha of the revert commit. On conflict, aborts the revert
         and brings the app back up on the unchanged code."""
-        with self._lock:
+        with self.repo_lock:
             self.stop()
             repo = self._repo()
             try:
@@ -147,7 +150,7 @@ class TargetAppManager:
         """Back to a pristine healthy main."""
         from app.seed.seed_ecommerce_repo import seed
 
-        with self._lock:
+        with self.repo_lock:
             self.stop()
             seed()
             self.deployed_branch = "main"

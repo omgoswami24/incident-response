@@ -181,6 +181,39 @@ def test_run_pipeline_records_error_on_llm_failure(session, monkeypatch):
     assert "LLM unavailable" in incident.error_message
 
 
+def test_run_pipeline_abandons_when_incident_closed_midflight(session, monkeypatch):
+    """A concurrent environment reset / new fault injection can close an
+    incident while its diagnosis pipeline is still running. The pipeline must
+    abandon quietly — no raised exception, no spurious error stamped on the
+    (deliberately) closed incident. Modeled here by a pipeline picking up an
+    already-closed incident, which trips the same InvalidTransition guard."""
+    monkeypatch.setattr(orchestrator, "engine", session.get_bind())
+    monkeypatch.setattr(orchestrator, "get_github_adapter", lambda: FakeGitHubAdapter())
+    monkeypatch.setattr(orchestrator, "get_slack_adapter", lambda: MockSlackAdapter())
+    monkeypatch.setattr(
+        commit_analysis,
+        "complete_json",
+        lambda *a, **k: {
+            "suspected_candidate_number": 0,
+            "reasoning": "irrelevant — should never advance a closed incident",
+            "confidence": 0.9,
+        },
+    )
+
+    incident = make_incident(status=IncidentStatus.closed)
+    session.add(incident)
+    session.commit()
+    session.refresh(incident)
+
+    # Must not raise, even though a closed incident cannot advance to analyzing.
+    orchestrator.run_pipeline(incident.id)
+
+    session.expire_all()
+    refreshed = session.get(Incident, incident.id)
+    assert refreshed.status == IncidentStatus.closed
+    assert refreshed.error_message is None  # abandoned quietly, not a failure
+
+
 def test_run_postmortem_generates_markdown_with_mocked_llm(session, monkeypatch):
     monkeypatch.setattr(orchestrator, "engine", session.get_bind())
     monkeypatch.setattr(postmortem, "complete", lambda *a, **k: "## Summary\nAll good now.")
